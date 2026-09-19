@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <title>MiniMeet</title>
+
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: Inter, Arial, sans-serif;
+        background: #0f172a;
+        color: #f8fafc;
+        display: flex;
+        justify-content: center;
+      }
+
+      .container {
+        width: min(1100px, 92%);
+        padding: 40px 0;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 36px;
+        letter-spacing: -1px;
+      }
+
+      .subtitle {
+        margin: 0 0 32px;
+        color: #94a3b8;
+      }
+
+      .video-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 20px;
+      }
+
+      .video-card {
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 16px;
+        padding: 16px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+      }
+
+      .video-card h2 {
+        margin: 0 0 12px;
+        font-size: 16px;
+        font-weight: 600;
+        color: #cbd5e1;
+      }
+
+      .video-wrapper {
+        position: relative;
+        aspect-ratio: 16 / 9;
+        background: #020617;
+        border-radius: 12px;
+        overflow: hidden;
+      }
+
+      video {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+
+      .controls {
+        display: flex;
+        justify-content: center;
+        gap: 12px;
+        margin-top: 28px;
+      }
+
+      button {
+        border: none;
+        border-radius: 10px;
+        padding: 12px 22px;
+        font-size: 15px;
+        font-weight: 600;
+        cursor: pointer;
+        background: #2563eb;
+        color: white;
+        transition: transform 0.15s, opacity 0.15s;
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+        opacity: 0.9;
+      }
+
+      button:active {
+        transform: translateY(0);
+      }
+
+      #callButton {
+        background: #16a34a;
+      }
+
+      .status {
+        margin-top: 24px;
+        text-align: center;
+        color: #94a3b8;
+        font-size: 14px;
+      }
+
+      @media (max-width: 700px) {
+        .video-grid {
+          grid-template-columns: 1fr;
+        }
+
+        h1 {
+          font-size: 30px;
+        }
+
+        .controls {
+          flex-direction: column;
+        }
+
+        button {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <h1>MiniMeet</h1>
+      <p class="subtitle">A WebRTC video calling experiment</p>
+
+      <div class="video-grid">
+        <div class="video-card">
+          <h2>Local Video</h2>
+
+          <div class="video-wrapper">
+            <video id="localVideo" autoplay playsinline></video>
+          </div>
+        </div>
+
+        <div class="video-card">
+          <h2>Remote Video</h2>
+
+          <div class="video-wrapper">
+            <video id="remoteVideo" autoplay playsinline></video>
+          </div>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button id="startButton">Start Camera</button>
+        <button id="callButton">Call</button>
+      </div>
+
+      <div class="status">WebRTC • STUN • ICE • WebSocket Signaling</div>
+    </div>
+    <script>
+      const localVideo = document.getElementById("localVideo");
+      const button = document.getElementById("startButton");
+      const remoteVideo = document.getElementById("remoteVideo");
+      const callButton = document.getElementById("callButton");
+
+      //create a websocket connection to the signaling server
+
+      const socket = new WebSocket("ws://localhost:8080");
+      let peerConnection;
+      let localStream;
+      let pendingCandidates = [];
+
+      function createPeerConnection() {
+        peerConnection = new RTCPeerConnection({
+          iceServers: [
+            {
+              urls: "stun:stun.l.google.com:19302",
+            },
+          ],
+        });
+
+        peerConnection.ontrack = (event) => {
+          console.log("Received remote track!");
+
+          remoteVideo.srcObject = event.streams[0];
+        };
+
+        peerConnection.onicecandidate = (event) => {
+          if (event.candidate) {
+            console.log("My ICE candidate:", event.candidate);
+
+            socket.send(
+              JSON.stringify({
+                type: "ice-candidate",
+                candidate: event.candidate,
+              })
+            );
+          }
+        };
+      }
+      createPeerConnection();
+      socket.onopen = () => {
+        console.log("Connected to signaling server");
+        socket.send(
+          JSON.stringify({
+            type: "hello",
+            message: "Hello from this browser!",
+          })
+        );
+      };
+      socket.onmessage = async (message) => {
+        const data = JSON.parse(message.data);
+
+        // Tab 2 receives the offer
+        if (data.type === "offer") {
+          console.log("Received offer:", data.offer);
+
+          await peerConnection.setRemoteDescription(data.offer);
+          for (const candidate of pendingCandidates) {
+            await peerConnection.addIceCandidate(candidate);
+          }
+
+          pendingCandidates = [];
+          console.log("Set remote description");
+
+          const answer = await peerConnection.createAnswer();
+          console.log("Created answer:", answer);
+
+          await peerConnection.setLocalDescription(answer);
+          console.log("Set local description");
+
+          socket.send(
+            JSON.stringify({
+              type: "answer",
+              answer: peerConnection.localDescription,
+            })
+          );
+
+          console.log("Sent answer");
+        }
+
+        // Tab 1 receives the answer
+        else if (data.type === "answer") {
+          console.log("Received answer:", data.answer);
+
+          await peerConnection.setRemoteDescription(data.answer);
+
+          console.log("Set remote description from answer");
+        }
+
+        // Receive ICE candidate
+        else if (data.type === "ice-candidate") {
+          if (!peerConnection) {
+            console.log("PeerConnection isn't ready. Saving ICE candidate.");
+            pendingCandidates.push(data.candidate);
+            return;
+          }
+
+          if (!peerConnection.remoteDescription) {
+            console.log(
+              "Remote description isn't ready. Saving ICE candidate."
+            );
+            pendingCandidates.push(data.candidate);
+            return;
+          }
+
+          await peerConnection.addIceCandidate(data.candidate);
+
+          console.log("Added remote ICE candidate");
+        }
+      };
+      callButton.addEventListener("click", async () => {
+        const offer = await peerConnection.createOffer();
+
+        console.log("Created offer:", offer);
+
+        await peerConnection.setLocalDescription(offer);
+
+        console.log("Set local description");
+
+        socket.send(
+          JSON.stringify({
+            type: "offer",
+            offer: peerConnection.localDescription,
+          })
+        );
+
+        console.log("Sent offer");
+      });
+      button.addEventListener("click", async () => {
+        localStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true,
+        });
+
+        localVideo.srcObject = localStream;
+
+        localStream.getTracks().forEach((track) => {
+          peerConnection.addTrack(track, localStream);
+        });
+
+        console.log("Camera added to PeerConnection");
+      });
+    </script>
+  </body>
+</html>
