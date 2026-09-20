@@ -55,7 +55,7 @@
 
       //create a websocket connection to the signaling server
 
-      const socket = new WebSocket("ws://localhost:8080");
+      const socket = new WebSocket("wss://webrtc-meet-oyyj.onrender.com");
       let peerConnection;
       let localStream;
       let pendingCandidates = [];
@@ -100,7 +100,9 @@
             },
           ],
         });
-
+        peerConnection.onconnectionstatechange = () => {
+          console.log("Connection state:", peerConnection.connectionState);
+        };
         peerConnection.ontrack = (event) => {
           console.log("Received remote track!");
 
