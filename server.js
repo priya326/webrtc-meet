@@ -2,36 +2,96 @@ const WebSocket = require("ws");
 
 const wss = new WebSocket.Server({ port: 8080 });
 
-const clients = [];
+const rooms = new Map();
 
 console.log("WebSocket server started on ws://localhost:8080");
 
 wss.on("connection", (socket) => {
     console.log("Client connected");
 
-    clients.push(socket);
-
     socket.on("message", (message) => {
-        // Node's ws library gives us the message directly.
-        // Convert it to a normal string.
-        const text = message.toString();
+        const data = JSON.parse(message.toString());
 
-        console.log("Server received:", text);
+        if (data.type === "join") {
+            const roomId = data.room;
 
-        clients.forEach((client) => {
-            if (client !== socket && client.readyState === WebSocket.OPEN) {
-                client.send(text);
+            if (!rooms.has(roomId)) {
+                rooms.set(roomId, []);
+            }
+
+            const room = rooms.get(roomId);
+
+            if (room.length >= 2) {
+                socket.send(
+                    JSON.stringify({
+                        type: "error",
+                        message: "Room is full",
+                    })
+                );
+
+                return;
+            }
+
+            room.push(socket);
+            socket.roomId = roomId;
+            if (room.length === 2) {
+                room[0].send(
+                    JSON.stringify({
+                        type: "peer-joined",
+                    })
+                )
+            }
+            console.log(`Client joined room: ${roomId}`);
+
+            socket.send(
+                JSON.stringify({
+                    type: "joined",
+                    room: roomId,
+                })
+            );
+
+            return;
+        }
+
+        // Everything below this point is a signaling message
+
+        const roomId = socket.roomId;
+
+        if (!roomId || !rooms.has(roomId)) {
+            return;
+        }
+
+        const room = rooms.get(roomId);
+
+        room.forEach((client) => {
+            if (
+                client !== socket &&
+                client.readyState === WebSocket.OPEN
+            ) {
+                client.send(JSON.stringify(data));
             }
         });
     });
 
     socket.on("close", () => {
-        const index = clients.indexOf(socket);
+        const roomId = socket.roomId;
 
-        if (index !== -1) {
-            clients.splice(index, 1);
+        if (!roomId || !rooms.has(roomId)) {
+            return;
         }
 
-        console.log("Client disconnected");
+        const room = rooms.get(roomId);
+
+        const index = room.indexOf(socket);
+
+        if (index !== -1) {
+            room.splice(index, 1);
+        }
+
+        if (room.length === 0) {
+            rooms.delete(roomId);
+        }
+
+        console.log(`Client left room: ${roomId}`);
     });
 });

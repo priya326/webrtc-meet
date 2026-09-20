@@ -37,7 +37,11 @@
 
       <div class="controls">
         <button id="startButton">Start Camera</button>
-        <button id="callButton">Call</button>
+      </div>
+      <div class="room-controls">
+        <input id="roomInput" type="text" placeholder="Enter room ID" />
+
+        <button id="joinButton">Join Room</button>
       </div>
 
       <div class="status">WebRTC • STUN • ICE • WebSocket Signaling</div>
@@ -46,7 +50,8 @@
       const localVideo = document.getElementById("localVideo");
       const button = document.getElementById("startButton");
       const remoteVideo = document.getElementById("remoteVideo");
-      const callButton = document.getElementById("callButton");
+      const joinButton = document.getElementById("joinButton");
+      const roomInput = document.getElementById("roomInput");
 
       //create a websocket connection to the signaling server
 
@@ -54,7 +59,39 @@
       let peerConnection;
       let localStream;
       let pendingCandidates = [];
+      let roomId = null;
+      let joinedRoom = false;
+      let peerReady = false;
 
+      async function maybeStartCall() {
+        if (!peerReady || !localStream) {
+          return;
+        }
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+
+        socket.send(
+          JSON.stringify({
+            type: "offer",
+            offer: peerConnection.localDescription,
+          })
+        );
+      }
+      joinButton.addEventListener("click", () => {
+        const room = roomInput.value.trim();
+
+        if (!room) {
+          alert("Please enter a room ID");
+          return;
+        }
+
+        socket.send(
+          JSON.stringify({
+            type: "join",
+            room: room,
+          })
+        );
+      });
       function createPeerConnection() {
         peerConnection = new RTCPeerConnection({
           iceServers: [
@@ -95,7 +132,22 @@
       };
       socket.onmessage = async (message) => {
         const data = JSON.parse(message.data);
+        if (data.type === "joined") {
+          roomId = data.room;
+          joinedRoom = true;
 
+          console.log("Joined room:", roomId);
+        }
+        if (data.type === "error") {
+          alert(data.message);
+        }
+        if (data.type === "peer-joined") {
+          console.log("A peer joined the room");
+
+          peerReady = true;
+
+          maybeStartCall();
+        }
         // Tab 2 receives the offer
         if (data.type === "offer") {
           console.log("Received offer:", data.offer);
@@ -154,24 +206,7 @@
           console.log("Added remote ICE candidate");
         }
       };
-      callButton.addEventListener("click", async () => {
-        const offer = await peerConnection.createOffer();
 
-        console.log("Created offer:", offer);
-
-        await peerConnection.setLocalDescription(offer);
-
-        console.log("Set local description");
-
-        socket.send(
-          JSON.stringify({
-            type: "offer",
-            offer: peerConnection.localDescription,
-          })
-        );
-
-        console.log("Sent offer");
-      });
       button.addEventListener("click", async () => {
         localStream = await navigator.mediaDevices.getUserMedia({
           video: true,
@@ -183,7 +218,7 @@
         localStream.getTracks().forEach((track) => {
           peerConnection.addTrack(track, localStream);
         });
-
+        maybeStartCall();
         console.log("Camera added to PeerConnection");
       });
     </script>
