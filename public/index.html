@@ -48,40 +48,133 @@
     </div>
     <script>
       const localVideo = document.getElementById("localVideo");
-      const button = document.getElementById("startButton");
+      const startButton = document.getElementById("startButton");
       const remoteVideo = document.getElementById("remoteVideo");
       const joinButton = document.getElementById("joinButton");
       const roomInput = document.getElementById("roomInput");
 
-      //create a websocket connection to the signaling server
-
       const socket = new WebSocket("wss://webrtc-meet-oyyj.onrender.com");
-      let peerConnection;
-      let localStream;
+
+      let peerConnection = null;
+      let localStream = null;
       let pendingCandidates = [];
+
       let roomId = null;
       let joinedRoom = false;
       let peerReady = false;
+      let makingOffer = false;
+
+      function createPeerConnection() {
+        peerConnection = new RTCPeerConnection({
+          iceServers: [
+            {
+              urls: "stun:stun.l.google.com:19302",
+            },
+          ],
+        });
+
+        peerConnection.onconnectionstatechange = () => {
+          console.log("Connection state:", peerConnection.connectionState);
+        };
+
+        peerConnection.oniceconnectionstatechange = () => {
+          console.log("ICE state:", peerConnection.iceConnectionState);
+        };
+
+        peerConnection.ontrack = async (event) => {
+          console.log("Received remote track!");
+
+          remoteVideo.srcObject = event.streams[0];
+
+          try {
+            await remoteVideo.play();
+          } catch (error) {
+            console.log("Remote video play failed:", error);
+          }
+        };
+
+        peerConnection.onicecandidate = (event) => {
+          if (!event.candidate) {
+            return;
+          }
+
+          socket.send(
+            JSON.stringify({
+              type: "ice-candidate",
+              candidate: event.candidate,
+            })
+          );
+        };
+      }
+
+      createPeerConnection();
 
       async function maybeStartCall() {
-        if (!peerReady || !localStream) {
+        if (!peerReady) {
+          console.log("Waiting for peer...");
           return;
         }
-        const offer = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offer);
+
+        if (!localStream) {
+          console.log("Waiting for camera...");
+          return;
+        }
+
+        if (makingOffer) {
+          return;
+        }
+
+        makingOffer = true;
+
+        try {
+          console.log("Starting call...");
+
+          const offer = await peerConnection.createOffer();
+
+          await peerConnection.setLocalDescription(offer);
+
+          socket.send(
+            JSON.stringify({
+              type: "offer",
+              offer: peerConnection.localDescription,
+            })
+          );
+
+          console.log("Offer sent");
+        } catch (error) {
+          console.error("Error creating offer:", error);
+        } finally {
+          makingOffer = false;
+        }
+      }
+
+      socket.onopen = () => {
+        console.log("Connected to signaling server");
 
         socket.send(
           JSON.stringify({
-            type: "offer",
-            offer: peerConnection.localDescription,
+            type: "hello",
+            message: "Hello from this browser!",
           })
         );
-      }
+      };
+
       joinButton.addEventListener("click", () => {
         const room = roomInput.value.trim();
 
         if (!room) {
           alert("Please enter a room ID");
+          return;
+        }
+
+        // Prevent joining again with the same WebSocket
+        if (joinedRoom) {
+          alert(`You are already in room "${roomId}"`);
+          return;
+        }
+
+        if (socket.readyState !== WebSocket.OPEN) {
+          alert("Not connected to signaling server yet.");
           return;
         }
 
@@ -92,81 +185,69 @@
           })
         );
       });
-      function createPeerConnection() {
-        peerConnection = new RTCPeerConnection({
-          iceServers: [
-            {
-              urls: "stun:stun.l.google.com:19302",
-            },
-          ],
-        });
-        peerConnection.onconnectionstatechange = () => {
-          console.log("Connection state:", peerConnection.connectionState);
-        };
-        peerConnection.ontrack = (event) => {
-          console.log("Received remote track!");
 
-          remoteVideo.srcObject = event.streams[0];
-        };
-
-        peerConnection.onicecandidate = (event) => {
-          if (event.candidate) {
-            console.log("My ICE candidate:", event.candidate);
-
-            socket.send(
-              JSON.stringify({
-                type: "ice-candidate",
-                candidate: event.candidate,
-              })
-            );
-          }
-        };
-      }
-      createPeerConnection();
-      socket.onopen = () => {
-        console.log("Connected to signaling server");
-        socket.send(
-          JSON.stringify({
-            type: "hello",
-            message: "Hello from this browser!",
-          })
-        );
-      };
       socket.onmessage = async (message) => {
         const data = JSON.parse(message.data);
+
+        // -------------------------
+        // Successfully joined
+        // -------------------------
         if (data.type === "joined") {
           roomId = data.room;
           joinedRoom = true;
 
+          roomInput.disabled = true;
+          joinButton.disabled = true;
+
           console.log("Joined room:", roomId);
+
+          return;
         }
+
+        // -------------------------
+        // Server error
+        // -------------------------
         if (data.type === "error") {
           alert(data.message);
+          return;
         }
+
+        // -------------------------
+        // Another peer joined
+        // -------------------------
         if (data.type === "peer-joined") {
           console.log("A peer joined the room");
 
           peerReady = true;
 
-          maybeStartCall();
+          // If camera is already on, start immediately.
+          // If camera is not on yet, maybeStartCall()
+          // will run again when the camera is started.
+          await maybeStartCall();
+
+          return;
         }
-        // Tab 2 receives the offer
+
+        // -------------------------
+        // Received offer
+        // -------------------------
         if (data.type === "offer") {
-          console.log("Received offer:", data.offer);
+          console.log("Received offer");
 
           await peerConnection.setRemoteDescription(data.offer);
+
+          console.log("Set remote description");
+
+          // Add ICE candidates that arrived before the offer
           for (const candidate of pendingCandidates) {
             await peerConnection.addIceCandidate(candidate);
           }
 
           pendingCandidates = [];
-          console.log("Set remote description");
 
           const answer = await peerConnection.createAnswer();
-          console.log("Created answer:", answer);
 
           await peerConnection.setLocalDescription(answer);
-          console.log("Set local description");
 
           socket.send(
             JSON.stringify({
@@ -175,30 +256,33 @@
             })
           );
 
-          console.log("Sent answer");
+          console.log("Answer sent");
+
+          return;
         }
 
-        // Tab 1 receives the answer
-        else if (data.type === "answer") {
-          console.log("Received answer:", data.answer);
+        // -------------------------
+        // Received answer
+        // -------------------------
+        if (data.type === "answer") {
+          console.log("Received answer");
 
           await peerConnection.setRemoteDescription(data.answer);
 
           console.log("Set remote description from answer");
+
+          return;
         }
 
-        // Receive ICE candidate
-        else if (data.type === "ice-candidate") {
-          if (!peerConnection) {
-            console.log("PeerConnection isn't ready. Saving ICE candidate.");
-            pendingCandidates.push(data.candidate);
-            return;
-          }
-
+        // -------------------------
+        // Received ICE candidate
+        // -------------------------
+        if (data.type === "ice-candidate") {
           if (!peerConnection.remoteDescription) {
             console.log(
               "Remote description isn't ready. Saving ICE candidate."
             );
+
             pendingCandidates.push(data.candidate);
             return;
           }
@@ -206,22 +290,50 @@
           await peerConnection.addIceCandidate(data.candidate);
 
           console.log("Added remote ICE candidate");
+
+          return;
         }
       };
 
-      button.addEventListener("click", async () => {
-        localStream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: true,
-        });
+      // -------------------------
+      // Start camera
+      // -------------------------
+      startButton.addEventListener("click", async () => {
+        try {
+          if (localStream) {
+            console.log("Camera is already running");
+            return;
+          }
 
-        localVideo.srcObject = localStream;
+          localStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: true,
+          });
 
-        localStream.getTracks().forEach((track) => {
-          peerConnection.addTrack(track, localStream);
-        });
-        maybeStartCall();
-        console.log("Camera added to PeerConnection");
+          localVideo.srcObject = localStream;
+
+          localStream.getTracks().forEach((track) => {
+            peerConnection.addTrack(track, localStream);
+          });
+
+          startButton.disabled = true;
+
+          console.log("Camera added to PeerConnection");
+
+          // Important:
+          // This allows BOTH orders:
+          //
+          // Camera → Join
+          //
+          // OR
+          //
+          // Join → Camera
+          //
+          await maybeStartCall();
+        } catch (error) {
+          console.error("Could not access camera:", error);
+          alert("Could not access camera or microphone.");
+        }
       });
     </script>
   </body>

@@ -22,7 +22,16 @@ wss.on("connection", (socket) => {
             }
 
             const room = rooms.get(roomId);
+            if (room.includes(socket)) {
+                socket.send(
+                    JSON.stringify({
+                        type: "error",
+                        message: "You are already in this room",
+                    })
+                );
 
+                return;
+            }
             if (room.length >= 2) {
                 socket.send(
                     JSON.stringify({
