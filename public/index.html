@@ -211,7 +211,30 @@
           alert(data.message);
           return;
         }
+        //peer left the room
+        if (data.type === "peer-left") {
+          console.log("Peer left the room");
 
+          peerReady = false;
+
+          if (peerConnection) {
+            peerConnection.close();
+          }
+
+          peerConnection = null;
+
+          remoteVideo.srcObject = null;
+
+          pendingCandidates = [];
+
+          createPeerConnection();
+          if (localStream) {
+            localStream.getTracks().forEach((track) => {
+              peerConnection.addTrack(track, localStream);
+            });
+          }
+          return;
+        }
         // -------------------------
         // Another peer joined
         // -------------------------
