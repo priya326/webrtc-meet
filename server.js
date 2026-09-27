@@ -99,6 +99,16 @@ wss.on("connection", (socket) => {
             room.splice(index, 1);
         }
 
+        room.forEach((client) => {
+            if (client.readyState === WebSocket.OPEN) {
+                client.send(
+                    JSON.stringify({
+                        type: "peer-left",
+                    })
+                );
+            }
+        });
+
         if (room.length === 0) {
             rooms.delete(roomId);
         }
